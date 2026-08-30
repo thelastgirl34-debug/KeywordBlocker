@@ -1,17 +1,17 @@
 package com.example.keywordblocker
 
 import android.accessibilityservice.AccessibilityService
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
-import java.util.LinkedList
 
 class BlockerService : AccessibilityService() {
 
-    // Servis telefonda gerçekten başladığı an bu uyarı çıkar
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Toast.makeText(applicationContext, "🔥 KEYWORD BLOCKER AKTİF EDİLDİ!", Toast.LENGTH_LONG).show()
+        showToast("🔥 Keyword Blocker Aktif!")
     }
 
     private val whitelistedDomains = listOf(
@@ -41,90 +41,83 @@ class BlockerService : AccessibilityService() {
     )
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
+        try {
+            if (event == null) return
 
-        // 1. Anlık event metinlerini kontrol et
-        for (text in event.text) {
-            if (checkText(text?.toString())) return
+            // 1. Klavyeden yazılan anlık metin kontrolü
+            val eventText = event.text.joinToString(" ").lowercase()
+            if (containsBlockedWord(eventText)) {
+                triggerBlock()
+                return
+            }
+
+            // 2. Ekrandaki metinleri güvenli kontrol et
+            val rootNode = rootInActiveWindow ?: return
+            if (isWhitelisted(rootNode)) return
+
+            checkNodeSafely(rootNode)
+        } catch (e: Throwable) {
+            // Hiçbir hata servisi kapatamaz, sessizce devam eder
         }
-
-        val source = event.source
-        if (source != null) {
-            if (checkText(source.text?.toString())) return
-            if (checkText(source.contentDescription?.toString())) return
-        }
-
-        // 2. Ekrandaki tüm pencereleri ve Chrome ağacını derinlemesine tara (BFS)
-        val rootNode = rootInActiveWindow ?: return
-
-        // Whitelist kontrolü (AI Studio'daysa es geç)
-        if (isWhitelisted(rootNode)) return
-
-        scanWindowFast(rootNode)
     }
 
-    private fun scanWindowFast(root: AccessibilityNodeInfo) {
-        val queue = LinkedList<AccessibilityNodeInfo>()
-        queue.add(root)
+    private fun checkNodeSafely(node: AccessibilityNodeInfo?) {
+        if (node == null) return
+        try {
+            val text = node.text?.toString()?.lowercase() ?: ""
+            val desc = node.contentDescription?.toString()?.lowercase() ?: ""
 
-        var count = 0
-        while (queue.isNotEmpty() && count < 300) {
-            val node = queue.poll() ?: continue
-            count++
-
-            val text = node.text?.toString()
-            val desc = node.contentDescription?.toString()
-
-            if (checkText(text) || checkText(desc)) {
+            if (containsBlockedWord(text) || containsBlockedWord(desc)) {
+                triggerBlock()
                 return
             }
 
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
+                val child = node.getChild(i)
+                if (child != null) {
+                    checkNodeSafely(child)
+                }
             }
+        } catch (e: Throwable) {
+            // Düğüm okuma hatası olursa görmezden gel
         }
     }
 
-    private fun checkText(rawText: String?): Boolean {
-        if (rawText.isNullOrEmpty()) return false
-        val lower = rawText.lowercase()
-
-        for (word in blockedWords) {
-            if (lower.contains(word)) {
-                triggerBlock(word)
-                return true
-            }
-        }
-        return false
-    }
-
-    private fun isWhitelisted(root: AccessibilityNodeInfo): Boolean {
-        val queue = LinkedList<AccessibilityNodeInfo>()
-        queue.add(root)
-
-        var count = 0
-        while (queue.isNotEmpty() && count < 50) {
-            val node = queue.poll() ?: continue
-            count++
-
+    private fun isWhitelisted(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        try {
             val text = node.text?.toString()?.lowercase() ?: ""
             val desc = node.contentDescription?.toString()?.lowercase() ?: ""
-
-            if (whitelistedDomains.any { text.contains(it) || desc.contains(it) }) {
-                return true
-            }
+            if (whitelistedDomains.any { text.contains(it) || desc.contains(it) }) return true
 
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
+                val child = node.getChild(i)
+                if (child != null && isWhitelisted(child)) return true
             }
+        } catch (e: Throwable) {
+            return false
         }
         return false
     }
 
-    private fun triggerBlock(matchedWord: String) {
-        // Anında ana ekrana fırlat ve bildir
-        performGlobalAction(GLOBAL_ACTION_HOME)
-        Toast.makeText(applicationContext, "🚫 Yasaklı Kelime Engellendi: $matchedWord", Toast.LENGTH_SHORT).show()
+    private fun containsBlockedWord(text: String): Boolean {
+        if (text.isEmpty()) return false
+        return blockedWords.any { text.contains(it) }
+    }
+
+    private fun triggerBlock() {
+        try {
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            showToast("🚫 Yasaklı İçerik Kapatıldı!")
+        } catch (e: Throwable) {}
+    }
+
+    private fun showToast(msg: String) {
+        try {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Throwable) {}
     }
 
     override fun onInterrupt() {}
