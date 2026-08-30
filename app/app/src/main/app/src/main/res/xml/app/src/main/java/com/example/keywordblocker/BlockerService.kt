@@ -1,6 +1,7 @@
 package com.example.keywordblocker
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
@@ -11,7 +12,19 @@ class BlockerService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        showToast("🔥 Keyword Blocker Aktif!")
+        try {
+            // Android sistemine tüm ekran ve klavye izinlerini doğrudan kodla tanımlıyoruz
+            val info = AccessibilityServiceInfo().apply {
+                eventTypes = AccessibilityEvent.TYPES_ALL_MASK
+                feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+                flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                        AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                        AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+                notificationTimeout = 20
+            }
+            serviceInfo = info
+            showToast("🔥 Keyword Blocker Başlatıldı!")
+        } catch (e: Throwable) {}
     }
 
     private val whitelistedDomains = listOf(
@@ -45,70 +58,75 @@ class BlockerService : AccessibilityService() {
             if (event == null) return
 
             // 1. Klavyeden yazılan anlık metin kontrolü
-            val eventText = event.text.joinToString(" ").lowercase()
-            if (containsBlockedWord(eventText)) {
-                triggerBlock()
-                return
+            for (text in event.text) {
+                if (checkText(text?.toString())) return
             }
 
-            // 2. Ekrandaki metinleri güvenli kontrol et
+            // 2. Olay kaynağını (Source Node) kontrol et
+            val source = event.source
+            if (source != null) {
+                if (checkText(source.text?.toString()) || checkText(source.contentDescription?.toString())) {
+                    return
+                }
+            }
+
+            // 3. Ekrandaki aktif pencereyi tara
             val rootNode = rootInActiveWindow ?: return
             if (isWhitelisted(rootNode)) return
 
-            checkNodeSafely(rootNode)
-        } catch (e: Throwable) {
-            // Hiçbir hata servisi kapatamaz, sessizce devam eder
-        }
+            scanNodeShallow(rootNode, 0)
+        } catch (e: Throwable) {}
     }
 
-    private fun checkNodeSafely(node: AccessibilityNodeInfo?) {
-        if (node == null) return
+    private fun scanNodeShallow(node: AccessibilityNodeInfo?, depth: Int) {
+        if (node == null || depth > 8) return
         try {
-            val text = node.text?.toString()?.lowercase() ?: ""
-            val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+            val text = node.text?.toString()
+            val desc = node.contentDescription?.toString()
 
-            if (containsBlockedWord(text) || containsBlockedWord(desc)) {
-                triggerBlock()
+            if (checkText(text) || checkText(desc)) {
                 return
             }
 
             for (i in 0 until node.childCount) {
-                val child = node.getChild(i)
-                if (child != null) {
-                    checkNodeSafely(child)
-                }
+                scanNodeShallow(node.getChild(i), depth + 1)
             }
-        } catch (e: Throwable) {
-            // Düğüm okuma hatası olursa görmezden gel
-        }
+        } catch (e: Throwable) {}
     }
 
-    private fun isWhitelisted(node: AccessibilityNodeInfo?): Boolean {
-        if (node == null) return false
-        try {
-            val text = node.text?.toString()?.lowercase() ?: ""
-            val desc = node.contentDescription?.toString()?.lowercase() ?: ""
-            if (whitelistedDomains.any { text.contains(it) || desc.contains(it) }) return true
+    private fun checkText(rawText: String?): Boolean {
+        if (rawText.isNullOrEmpty()) return false
+        val lower = rawText.lowercase()
 
-            for (i in 0 until node.childCount) {
-                val child = node.getChild(i)
-                if (child != null && isWhitelisted(child)) return true
+        for (word in blockedWords) {
+            if (lower.contains(word)) {
+                triggerBlock(word)
+                return true
             }
-        } catch (e: Throwable) {
-            return false
         }
         return false
     }
 
-    private fun containsBlockedWord(text: String): Boolean {
-        if (text.isEmpty()) return false
-        return blockedWords.any { text.contains(it) }
+    private fun isWhitelisted(root: AccessibilityNodeInfo): Boolean {
+        try {
+            val text = root.text?.toString()?.lowercase() ?: ""
+            val desc = root.contentDescription?.toString()?.lowercase() ?: ""
+            if (whitelistedDomains.any { text.contains(it) || desc.contains(it) }) return true
+
+            for (i in 0 until root.childCount) {
+                val child = root.getChild(i) ?: continue
+                val cText = child.text?.toString()?.lowercase() ?: ""
+                val cDesc = child.contentDescription?.toString()?.lowercase() ?: ""
+                if (whitelistedDomains.any { cText.contains(it) || cDesc.contains(it) }) return true
+            }
+        } catch (e: Throwable) {}
+        return false
     }
 
-    private fun triggerBlock() {
+    private fun triggerBlock(matchedWord: String) {
         try {
             performGlobalAction(GLOBAL_ACTION_HOME)
-            showToast("🚫 Yasaklı İçerik Kapatıldı!")
+            showToast("🚫 Yasaklı Kelime Engellendi: $matchedWord")
         } catch (e: Throwable) {}
     }
 
