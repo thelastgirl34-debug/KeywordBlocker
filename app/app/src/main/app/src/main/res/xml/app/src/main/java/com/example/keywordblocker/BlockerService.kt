@@ -4,13 +4,14 @@ import android.accessibilityservice.AccessibilityService
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
+import java.util.LinkedList
 
 class BlockerService : AccessibilityService() {
 
-    // Servis açıldığı an ekrana uyarı basar (Çalıştığından emin olmak için)
+    // Servis telefonda gerçekten başladığı an bu uyarı çıkar
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Toast.makeText(applicationContext, "Keyword Blocker Koruması Başladı!", Toast.LENGTH_LONG).show()
+        Toast.makeText(applicationContext, "🔥 KEYWORD BLOCKER AKTİF EDİLDİ!", Toast.LENGTH_LONG).show()
     }
 
     private val whitelistedDomains = listOf(
@@ -42,76 +43,88 @@ class BlockerService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // 1. Klavyeden yazılan metinleri kontrol et (Klavye açık olsa bile yakalar)
-        val eventTexts = event.text.joinToString(" ").lowercase()
-        val sourceText = event.source?.text?.toString()?.lowercase() ?: ""
-        val sourceDesc = event.source?.contentDescription?.toString()?.lowercase() ?: ""
+        // 1. Anlık event metinlerini kontrol et
+        for (text in event.text) {
+            if (checkText(text?.toString())) return
+        }
 
-        val rootNode = rootInActiveWindow
+        val source = event.source
+        if (source != null) {
+            if (checkText(source.text?.toString())) return
+            if (checkText(source.contentDescription?.toString())) return
+        }
+
+        // 2. Ekrandaki tüm pencereleri ve Chrome ağacını derinlemesine tara (BFS)
+        val rootNode = rootInActiveWindow ?: return
 
         // Whitelist kontrolü (AI Studio'daysa es geç)
-        if (rootNode != null && isWhitelisted(rootNode)) {
-            return
-        }
+        if (isWhitelisted(rootNode)) return
 
-        // Kelime eşleşmesi var mı?
-        if (containsBlockedWord(eventTexts) || containsBlockedWord(sourceText) || containsBlockedWord(sourceDesc)) {
-            blockAction(rootNode)
-            return
-        }
+        scanWindowFast(rootNode)
+    }
 
-        // 2. Ekrandaki yazıları kontrol et
-        if (rootNode != null) {
-            checkNode(rootNode)
+    private fun scanWindowFast(root: AccessibilityNodeInfo) {
+        val queue = LinkedList<AccessibilityNodeInfo>()
+        queue.add(root)
+
+        var count = 0
+        while (queue.isNotEmpty() && count < 300) {
+            val node = queue.poll() ?: continue
+            count++
+
+            val text = node.text?.toString()
+            val desc = node.contentDescription?.toString()
+
+            if (checkText(text) || checkText(desc)) {
+                return
+            }
+
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
         }
     }
 
-    private fun isWhitelisted(node: AccessibilityNodeInfo): Boolean {
-        val text = node.text?.toString()?.lowercase() ?: ""
-        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
-        if (whitelistedDomains.any { text.contains(it) || desc.contains(it) }) return true
+    private fun checkText(rawText: String?): Boolean {
+        if (rawText.isNullOrEmpty()) return false
+        val lower = rawText.lowercase()
 
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i)
-            if (child != null && isWhitelisted(child)) return true
+        for (word in blockedWords) {
+            if (lower.contains(word)) {
+                triggerBlock(word)
+                return true
+            }
         }
         return false
     }
 
-    private fun checkNode(node: AccessibilityNodeInfo) {
-        val text = node.text?.toString()?.lowercase() ?: ""
-        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
-        if (containsBlockedWord(text) || containsBlockedWord(desc)) {
-            blockAction(node)
-            return
-        }
-        for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { checkNode(it) }
-        }
-    }
+    private fun isWhitelisted(root: AccessibilityNodeInfo): Boolean {
+        val queue = LinkedList<AccessibilityNodeInfo>()
+        queue.add(root)
 
-    private fun containsBlockedWord(text: String): Boolean {
-        if (text.isEmpty()) return false
-        return blockedWords.any { text.contains(it) }
-    }
+        var count = 0
+        while (queue.isNotEmpty() && count < 50) {
+            val node = queue.poll() ?: continue
+            count++
 
-    private fun blockAction(rootNode: AccessibilityNodeInfo?) {
-        Toast.makeText(applicationContext, "YASAKLI İÇERİK ENGELLENDİ!", Toast.LENGTH_SHORT).show()
+            val text = node.text?.toString()?.lowercase() ?: ""
+            val desc = node.contentDescription?.toString()?.lowercase() ?: ""
 
-        // 1. Önce sekmeyi kapatmayı dene
-        if (rootNode != null) {
-            val closeButtons = rootNode.findAccessibilityNodeInfosByViewId("com.android.chrome:id/close_button")
-            for (button in closeButtons) {
-                if (button.isClickable) {
-                    button.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    return
-                }
+            if (whitelistedDomains.any { text.contains(it) || desc.contains(it) }) {
+                return true
+            }
+
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
             }
         }
+        return false
+    }
 
-        // 2. Sekme butonu yoksa sayfayı geri al ve anında Ana Ekrana fırlat (Garanti Kapatma)
-        performGlobalAction(GLOBAL_ACTION_BACK)
+    private fun triggerBlock(matchedWord: String) {
+        // Anında ana ekrana fırlat ve bildir
         performGlobalAction(GLOBAL_ACTION_HOME)
+        Toast.makeText(applicationContext, "🚫 Yasaklı Kelime Engellendi: $matchedWord", Toast.LENGTH_SHORT).show()
     }
 
     override fun onInterrupt() {}
