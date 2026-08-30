@@ -7,6 +7,12 @@ import android.widget.Toast
 
 class BlockerService : AccessibilityService() {
 
+    // Servis açıldığı an ekrana uyarı basar (Çalıştığından emin olmak için)
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        Toast.makeText(applicationContext, "Keyword Blocker Koruması Başladı!", Toast.LENGTH_LONG).show()
+    }
+
     private val whitelistedDomains = listOf(
         "aistudio.google.com",
         "ai.google.dev"
@@ -35,17 +41,29 @@ class BlockerService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        val rootNode = rootInActiveWindow ?: return
 
-        if (isWhitelisted(rootNode)) return
+        // 1. Klavyeden yazılan metinleri kontrol et (Klavye açık olsa bile yakalar)
+        val eventTexts = event.text.joinToString(" ").lowercase()
+        val sourceText = event.source?.text?.toString()?.lowercase() ?: ""
+        val sourceDesc = event.source?.contentDescription?.toString()?.lowercase() ?: ""
 
-        val eventText = event.text.joinToString(" ").lowercase()
-        if (containsBlockedWord(eventText)) {
-            closeTabAction(rootNode)
+        val rootNode = rootInActiveWindow
+
+        // Whitelist kontrolü (AI Studio'daysa es geç)
+        if (rootNode != null && isWhitelisted(rootNode)) {
             return
         }
 
-        checkNode(rootNode)
+        // Kelime eşleşmesi var mı?
+        if (containsBlockedWord(eventTexts) || containsBlockedWord(sourceText) || containsBlockedWord(sourceDesc)) {
+            blockAction(rootNode)
+            return
+        }
+
+        // 2. Ekrandaki yazıları kontrol et
+        if (rootNode != null) {
+            checkNode(rootNode)
+        }
     }
 
     private fun isWhitelisted(node: AccessibilityNodeInfo): Boolean {
@@ -64,7 +82,7 @@ class BlockerService : AccessibilityService() {
         val text = node.text?.toString()?.lowercase() ?: ""
         val desc = node.contentDescription?.toString()?.lowercase() ?: ""
         if (containsBlockedWord(text) || containsBlockedWord(desc)) {
-            closeTabAction(node)
+            blockAction(node)
             return
         }
         for (i in 0 until node.childCount) {
@@ -77,19 +95,23 @@ class BlockerService : AccessibilityService() {
         return blockedWords.any { text.contains(it) }
     }
 
-    private fun closeTabAction(rootNode: AccessibilityNodeInfo?) {
+    private fun blockAction(rootNode: AccessibilityNodeInfo?) {
+        Toast.makeText(applicationContext, "YASAKLI İÇERİK ENGELLENDİ!", Toast.LENGTH_SHORT).show()
+
+        // 1. Önce sekmeyi kapatmayı dene
         if (rootNode != null) {
             val closeButtons = rootNode.findAccessibilityNodeInfosByViewId("com.android.chrome:id/close_button")
             for (button in closeButtons) {
                 if (button.isClickable) {
                     button.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    Toast.makeText(applicationContext, "Yasaklı sekme kapatıldı!", Toast.LENGTH_SHORT).show()
                     return
                 }
             }
         }
+
+        // 2. Sekme butonu yoksa sayfayı geri al ve anında Ana Ekrana fırlat (Garanti Kapatma)
         performGlobalAction(GLOBAL_ACTION_BACK)
-        Toast.makeText(applicationContext, "Yasaklı içerik kapatıldı!", Toast.LENGTH_SHORT).show()
+        performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
     override fun onInterrupt() {}
